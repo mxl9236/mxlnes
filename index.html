@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FC 日版游戏列表</title>
+<style>
+  :root { --bg:#f4f4f6; --fg:#222; --card:#fff; --muted:#666; --line:#ddd; --accent:#c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#18181b; --fg:#e6e6e6; --card:#242428; --muted:#9a9aa0; --line:#3a3a40; --accent:#e5534b; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans","Noto Sans CJK SC",sans-serif; background:var(--bg); color:var(--fg); }
+  header { position:sticky; top:0; z-index:5; background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; }
+  h1 { font-size:18px; margin:0 0 8px; }
+  .controls { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .controls input, .controls select { font:inherit; padding:5px 8px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--fg); }
+  .controls input[type=search] { flex:1 1 240px; min-width:180px; }
+  #count { color:var(--muted); font-size:13px; margin-left:auto; }
+  main { padding:16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:6px; overflow:hidden; cursor:pointer; display:flex; flex-direction:column; }
+  .card:hover, .card:focus { border-color:var(--accent); outline:none; }
+  .thumb { aspect-ratio:1/1; background:var(--bg); display:flex; align-items:center; justify-content:center; }
+  .thumb img { max-width:100%; max-height:100%; object-fit:contain; }
+  .info { padding:8px; font-size:13px; line-height:1.4; }
+  .jp { font-weight:600; }
+  .sub, .meta { color:var(--muted); font-size:12px; }
+  .empty { color:var(--muted); padding:40px; text-align:center; }
+  dialog { border:none; border-radius:8px; padding:0; max-width:min(900px,95vw); width:100%; background:var(--card); color:var(--fg); }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  .dlg-body { padding:16px; }
+  .dlg-imgs { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-bottom:12px; }
+  .dlg-imgs figure { margin:0; flex:1 1 300px; text-align:center; }
+  .dlg-imgs img { max-width:100%; max-height:360px; image-rendering:pixelated; }
+  .dlg-imgs figcaption { color:var(--muted); font-size:12px; }
+  table.fields { border-collapse:collapse; width:100%; font-size:14px; }
+  table.fields th { text-align:left; white-space:nowrap; color:var(--muted); font-weight:normal; padding:4px 12px 4px 0; vertical-align:top; }
+  table.fields td { padding:4px 0; word-break:break-all; }
+  .close { float:right; font-size:20px; background:none; border:none; color:var(--fg); cursor:pointer; }
+  #error { color:var(--accent); padding:20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FC 日版游戏列表</h1>
+  <div class="controls">
+    <input type="search" id="q" placeholder="搜索日文名 / 中文名 / 英文名 / 发行商 / ID">
+    <select id="year"><option value="">全部年份</option></select>
+    <select id="pub"><option value="">全部发行商</option></select>
+    <select id="sort">
+      <option value="date">发售日 ↑</option>
+      <option value="date-desc">发售日 ↓</option>
+      <option value="jp">日文名</option>
+      <option value="en">英文名</option>
+    </select>
+    <select id="img">
+      <option value="package">封面</option>
+      <option value="title">标题画面</option>
+    </select>
+    <span id="count"></span>
+  </div>
+</header>
+<main>
+  <div id="error" hidden></div>
+  <div class="grid" id="grid"></div>
+</main>
+
+<dialog id="dlg">
+  <div class="dlg-body">
+    <button class="close" id="dlg-close" aria-label="关闭">×</button>
+    <div class="dlg-imgs" id="dlg-imgs"></div>
+    <table class="fields" id="dlg-fields"></table>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  const FIELDS = [
+    ['jp_name', '日文名'],
+    ['cn_name', '中文名'],
+    ['en_name', '英文名'],
+    ['release_date', '发售日'],
+    ['publisher', '发行商'],
+    ['nointro_id', 'No-Intro ID'],
+    ['nescartdb_id', 'NesCartDB ID'],
+    ['nointro_rom', 'ROM 文件'],
+  ];
+  const $ = id => document.getElementById(id);
+  let games = [];
+
+  function parseDate(s) {
+    const m = /^(\d{4})年(\d{1,2})月(\d{1,2})日$/.exec(s || '');
+    return m ? +m[1] * 10000 + +m[2] * 100 + +m[3] : 99999999;
+  }
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function img(src, alt) {
+    const i = document.createElement('img');
+    i.loading = 'lazy';
+    i.alt = alt;
+    if (src) i.src = src;
+    return i;
+  }
+
+  function fillSelect(sel, values) {
+    for (const v of values) {
+      const o = document.createElement('option');
+      o.value = o.textContent = v;
+      sel.appendChild(o);
+    }
+  }
+
+  function render() {
+    const q = $('q').value.trim().toLowerCase();
+    const year = $('year').value, pub = $('pub').value, sort = $('sort').value, kind = $('img').value;
+    let list = games.filter(g =>
+      (!year || g._year === year) &&
+      (!pub || g.publisher === pub) &&
+      (!q || g._search.includes(q)));
+    const cmp = {
+      'date': (a, b) => a._date - b._date,
+      'date-desc': (a, b) => b._date - a._date,
+      'jp': (a, b) => (a.jp_name || '').localeCompare(b.jp_name || '', 'ja'),
+      'en': (a, b) => (a.en_name || '').localeCompare(b.en_name || '', 'en'),
+    }[sort];
+    list = list.slice().sort((a, b) => cmp(a, b) || a._idx - b._idx);
+
+    const grid = $('grid');
+    grid.replaceChildren();
+    const frag = document.createDocumentFragment();
+    for (const g of list) {
+      const card = el('div', 'card');
+      card.tabIndex = 0;
+      const t = el('div', 'thumb');
+      t.appendChild(img(kind === 'title' ? g.natsugee_title_local : g.natsugee_package_local, g.jp_name || ''));
+      card.appendChild(t);
+      const info = el('div', 'info');
+      info.appendChild(el('div', 'jp', g.jp_name));
+      if (g.cn_name) info.appendChild(el('div', 'sub', g.cn_name));
+      info.appendChild(el('div', 'meta', [g.release_date, g.publisher].filter(Boolean).join(' · ')));
+      card.appendChild(info);
+      card.addEventListener('click', () => show(g));
+      card.addEventListener('keydown', e => { if (e.key === 'Enter') show(g); });
+      frag.appendChild(card);
+    }
+    grid.appendChild(frag);
+    if (!list.length) grid.appendChild(el('div', 'empty', '没有匹配的游戏'));
+    $('count').textContent = `${list.length} / ${games.length}`;
+  }
+
+  function show(g) {
+    const imgs = $('dlg-imgs');
+    imgs.replaceChildren();
+    for (const [src, cap] of [[g.natsugee_package_local, '封面'], [g.natsugee_title_local, '标题画面']]) {
+      if (!src) continue;
+      const f = el('figure');
+      f.appendChild(img(src, cap));
+      f.appendChild(el('figcaption', null, cap));
+      imgs.appendChild(f);
+    }
+    const tbl = $('dlg-fields');
+    tbl.replaceChildren();
+    for (const [k, label] of FIELDS) {
+      const tr = el('tr');
+      tr.appendChild(el('th', null, label));
+      const v = g[k];
+      tr.appendChild(el('td', null, v == null || v === '' ? '—' : String(v)));
+      tbl.appendChild(tr);
+    }
+    $('dlg').showModal();
+  }
+
+  $('dlg-close').addEventListener('click', () => $('dlg').close());
+  $('dlg').addEventListener('click', e => { if (e.target === $('dlg')) $('dlg').close(); });
+  for (const id of ['year', 'pub', 'sort', 'img']) $(id).addEventListener('change', render);
+  let timer;
+  $('q').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(render, 150); });
+
+  fetch('gamelist_fc_jp.json')
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(data => {
+      games = data.map((g, i) => ({
+        ...g,
+        _idx: i,
+        _date: parseDate(g.release_date),
+        _year: (/^(\d{4})/.exec(g.release_date || '') || [])[1] || '',
+        _search: [g.jp_name, g.cn_name, g.en_name, g.publisher, g.nointro_id, g.nescartdb_id, g.nointro_rom]
+          .filter(v => v != null).join('\n').toLowerCase(),
+      }));
+      fillSelect($('year'), [...new Set(games.map(g => g._year).filter(Boolean))].sort());
+      const pubCount = {};
+      for (const g of games) if (g.publisher) pubCount[g.publisher] = (pubCount[g.publisher] || 0) + 1;
+      fillSelect($('pub'), Object.keys(pubCount).sort((a, b) => pubCount[b] - pubCount[a] || a.localeCompare(b, 'zh')));
+      render();
+    })
+    .catch(err => {
+      const e = $('error');
+      e.hidden = false;
+      e.textContent = `无法加载 gamelist_fc_jp.json：${err.message}。请通过 HTTP 服务器访问本页面（例如 python3 -m http.server），不要直接用 file:// 打开。`;
+    });
+})();
+</script>
+</body>
+</html>
